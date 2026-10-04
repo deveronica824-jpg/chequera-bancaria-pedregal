@@ -8,17 +8,38 @@ st.set_page_config(page_title="Chequera Bancaria Pedregal", layout="wide")
 st.title("📊 Chequera Bancaria Pedregal")
 st.write("Sube tu archivo de movimientos en Excel para generar el análisis financiero.")
 
+def deduplicar_columnas(columnas):
+    """
+    Asegura que todos los nombres de columnas sean únicos y válidos.
+    """
+    vistos = {}
+    columnas_limpias = []
+    for col in columnas:
+        c = str(col).strip().upper().replace(" ", "_")
+        if c in ["NAN", "NONE", "", "UNNAMED"]:
+            c = "DESCONOCIDO"
+        if c in vistos:
+            vistos[c] += 1
+            columnas_limpias.append(f"{c}_{vistos[c]}")
+        else:
+            vistos[c] = 0
+            columnas_limpias.append(c)
+    return columnas_limpias
+
 @st.cache_data
 def cargar_y_limpiar_movimientos(archivo):
     """
     Carga y consolida las hojas de un libro de Excel financiero o reporte,
-    detectando automáticamente la fila de encabezados. Funciona con st.file_uploader o rutas locales.
+    detectando automáticamente encabezados y evitando columnas duplicadas.
     """
     xls = pd.ExcelFile(archivo)
     hojas_procesadas = []
 
     for nombre_hoja in xls.sheet_names:
-        df_raw = pd.read_excel(xls, sheet_name=nombre_hoja)
+        try:
+            df_raw = pd.read_excel(xls, sheet_name=nombre_hoja)
+        except Exception:
+            continue
         
         # Buscar la fila que contiene los nombres de las columnas principales
         header_idx = None
@@ -29,10 +50,16 @@ def cargar_y_limpiar_movimientos(archivo):
                 break
         
         if header_idx is not None:
-            # Reasignar encabezados y limpiar filas superiores
+            # Reasignar encabezados
             df_hoja = pd.read_excel(xls, sheet_name=nombre_hoja, skiprows=header_idx + 1)
-            # Normalizar nombres de columnas
-            df_hoja.columns = [str(col).strip().upper().replace(" ", "_") for col in df_raw.iloc[header_idx]]
+            raw_cols = df_raw.iloc[header_idx].tolist()
+            
+            # Limpiar y deduplicar columnas para evitar InvalidIndexError
+            df_hoja.columns = deduplicar_columnas(raw_cols)
+            
+            # Eliminar columnas irrelevantes/vacías
+            df_hoja = df_hoja.loc[:, ~df_hoja.columns.str.startswith("DESCONOCIDO")]
+            
             df_hoja['HOJA_ORIGEN'] = nombre_hoja
             hojas_procesadas.append(df_hoja)
 
@@ -133,7 +160,7 @@ if archivo_subido is not None:
         reportes = generar_reporte_financiero(df_movimientos)
 
         with tab2:
-            st.subheader("Resumen por Área Financial")
+            st.subheader("Resumen por Área Financiera")
             if 'resumen_area' in reportes:
                 st.dataframe(reportes['resumen_area'], use_container_width=True)
             else:
