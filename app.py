@@ -1,16 +1,24 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
 
-def cargar_y_limpiar_movimientos(archivo_path):
+# Configuración de página de Streamlit
+st.set_page_config(page_title="Chequera Bancaria Pedregal", layout="wide")
+
+st.title("📊 Chequera Bancaria Pedregal")
+st.write("Sube tu archivo de movimientos en Excel para generar el análisis financiero.")
+
+@st.cache_data
+def cargar_y_limpiar_movimientos(archivo):
     """
-    Carga y consolida las hojas de un libro de Excel financiero o reporte
-    detectando automáticamente la fila de encabezados.
+    Carga y consolida las hojas de un libro de Excel financiero o reporte,
+    detectando automáticamente la fila de encabezados. Funciona con st.file_uploader o rutas locales.
     """
-    xls = pd.ExcelFile(archivo_path)
+    xls = pd.ExcelFile(archivo)
     hojas_procesadas = []
 
     for nombre_hoja in xls.sheet_names:
-        df_raw = pd.read_excel(archivo_path, sheet_name=nombre_hoja)
+        df_raw = pd.read_excel(xls, sheet_name=nombre_hoja)
         
         # Buscar la fila que contiene los nombres de las columnas principales
         header_idx = None
@@ -22,14 +30,15 @@ def cargar_y_limpiar_movimientos(archivo_path):
         
         if header_idx is not None:
             # Reasignar encabezados y limpiar filas superiores
-            df_hoja = pd.read_excel(archivo_path, sheet_name=nombre_hoja, skiprows=header_idx + 1)
+            df_hoja = pd.read_excel(xls, sheet_name=nombre_hoja, skiprows=header_idx + 1)
             # Normalizar nombres de columnas
             df_hoja.columns = [str(col).strip().upper().replace(" ", "_") for col in df_raw.iloc[header_idx]]
             df_hoja['HOJA_ORIGEN'] = nombre_hoja
             hojas_procesadas.append(df_hoja)
 
     if not hojas_procesadas:
-        raise ValueError("No se encontraron tablas con formato válido en el archivo.")
+        st.error("No se encontraron tablas con formato válido en el archivo subido.")
+        return pd.DataFrame()
 
     # Concatenar todas las pestañas procesadas
     df_consolidado = pd.concat(hojas_procesadas, ignore_index=True)
@@ -43,9 +52,10 @@ def cargar_y_limpiar_movimientos(archivo_path):
     }
     df_consolidado.rename(columns=mapeo_columnas, inplace=True)
 
-    # Filtrar filas vacías o de totales que no contienen movimientos
+    # Filtrar filas vacías o de totales
     cols_clave = [col for col in ['CARGO', 'ABONO', 'SALDO'] if col in df_consolidado.columns]
-    df_consolidado.dropna(subset=cols_clave, how='all', inplace=True)
+    if cols_clave:
+        df_consolidado.dropna(subset=cols_clave, how='all', inplace=True)
 
     # Convertir y limpiar columnas numéricas
     for col in ['SUBTOTAL', 'CARGO', 'ABONO', 'SALDO']:
@@ -68,14 +78,15 @@ def generar_reporte_financiero(df):
     """
     reportes = {}
 
-    # 1. Resumen por Área (RANCHO, LA PERLA, CASAS, etc.)
+    # 1. Resumen por Área
     if 'AREA' in df.columns:
-        reportes['resumen_area'] = df.groupby('AREA').agg(
+        resumen_area = df.groupby('AREA').agg(
             Total_Cargos=('CARGO', 'sum'),
             Total_Abonos=('ABONO', 'sum'),
             Total_Movimientos=('CARGO', 'count')
         ).reset_index()
-        reportes['resumen_area']['Flujo_Neto'] = reportes['resumen_area']['Total_Abonos'] - reportes['resumen_area']['Total_Cargos']
+        resumen_area['Flujo_Neto'] = resumen_area['Total_Abonos'] - resumen_area['Total_Cargos']
+        reportes['resumen_area'] = resumen_area
 
     # 2. Resumen por Subcuenta y Aplicado En
     cols_agrupacion = [c for c in ['AREA', 'APLICADO_EN', 'SUBCUENTA'] if c in df.columns]
@@ -85,7 +96,7 @@ def generar_reporte_financiero(df):
             Total_Abonos=('ABONO', 'sum')
         ).reset_index()
 
-    # 3. Top Proveedores / Clientes por volumen de egresos
+    # 3. Top Proveedores / Clientes
     if 'PROVEEDOR_CLIENTE' in df.columns:
         reportes['top_proveedores'] = df.groupby('PROVEEDOR_CLIENTE').agg(
             Total_Pagado=('CARGO', 'sum'),
@@ -95,31 +106,44 @@ def generar_reporte_financiero(df):
     return reportes
 
 
-# ==========================================
-# EJECUCIÓN PRINCIPAL
-# ==========================================
-if __name__ == "__main__":
-    ruta_archivo = 'MOVIMIENTOS 2026.xlsx'  # Reemplazar por la ruta de tu archivo
-    
-    print("Cargando y procesando datos...")
-    df_movimientos = cargar_y_limpiar_movimientos(ruta_archivo)
-    
-    print(f"\n¡Procesamiento exitoso! Total de movimientos válidos: {len(df_movimientos)}")
-    print("\n--- VISTA PREVIA DE LOS DATOS ---")
-    print(df_movimientos[['FECHA', 'PROVEEDOR_CLIENTE', 'CARGO', 'ABONO', 'AREA', 'SUBCUENTA']].head())
+# Selector de archivo en la interfaz de Streamlit
+archivo_subido = st.file_uploader("Carga aquí tu archivo de Excel (.xlsx / .xls)", type=["xlsx", "xls"])
 
-    # Generar reportes
-    reportes = generar_reporte_financiero(df_movimientos)
+if archivo_subido is not None:
+    with st.spinner("Procesando datos del archivo..."):
+        df_movimientos = cargar_y_limpiar_movimientos(archivo_subido)
+        
+    if not df_movimientos.empty:
+        st.success(f"¡Procesamiento exitoso! Total de registros analizados: {len(df_movimientos)}")
 
-    if 'resumen_area' in reportes:
-        print("\n--- RESUMEN POR ÁREA ---")
-        print(reportes['resumen_area'].to_string(index=False))
+        # Métricas principales
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Cargos (Egresos)", f"${df_movimientos['CARGO'].sum():,.2f}")
+        col2.metric("Total Abonos (Ingresos)", f"${df_movimientos['ABONO'].sum():,.2f}")
+        flujo_neto = df_movimientos['ABONO'].sum() - df_movimientos['CARGO'].sum()
+        col3.metric("Flujo Neto", f"${flujo_neto:,.2f}")
 
-    # Guardar resultado consolidado a Excel
-    archivo_salida = 'MOVIMIENTOS_CONSOLIDADOS_2026.xlsx'
-    with pd.ExcelWriter(archivo_salida, engine='openpyxl') as writer:
-        df_movimientos.to_excel(writer, sheet_name='Movimientos_Limpios', index=False)
-        for nombre_reporte, df_rep in reportes.items():
-            df_rep.to_excel(writer, sheet_name=nombre_reporte[:31], index=False)
-            
-    print(f"\nReporte completo exportado correctamente a: {archivo_salida}")
+        # Pestañas con los resultados
+        tab1, tab2, tab3 = st.tabs(["📋 Detalle de Movimientos", "🏢 Resumen por Área", "🔝 Top Proveedores"])
+
+        with tab1:
+            st.subheader("Tabla Consolidada de Movimientos")
+            st.dataframe(df_movimientos, use_container_width=True)
+
+        reportes = generar_reporte_financiero(df_movimientos)
+
+        with tab2:
+            st.subheader("Resumen por Área Financial")
+            if 'resumen_area' in reportes:
+                st.dataframe(reportes['resumen_area'], use_container_width=True)
+            else:
+                st.info("No se encontró la columna 'AREA' para generar el reporte.")
+
+        with tab3:
+            st.subheader("Top Proveedores / Clientes")
+            if 'top_proveedores' in reportes:
+                st.dataframe(reportes['top_proveedores'], use_container_width=True)
+            else:
+                st.info("No se encontró la columna 'PROVEEDOR_CLIENTE'.")
+else:
+    st.info("👆 Sube un archivo Excel arriba para desplegar los reportes.")
