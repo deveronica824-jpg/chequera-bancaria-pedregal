@@ -1,143 +1,125 @@
 import pandas as pd
 import numpy as np
 
-# ==============================================================================
-# 1. CARGA Y LIMPIEZA DE DATOS DESDE EXCEL
-# ==============================================================================
+def cargar_y_limpiar_movimientos(archivo_path):
+    """
+    Carga y consolida las hojas de un libro de Excel financiero o reporte
+    detectando automáticamente la fila de encabezados.
+    """
+    xls = pd.ExcelFile(archivo_path)
+    hojas_procesadas = []
 
-def cargar_y_limpiar_movimientos(file_path="MOVIMIENTOS 2026.xlsx", sheet_name="Detalle1"):
-    """
-    Carga el archivo de movimientos contables y ajusta los encabezados dinámicamente.
-    """
-    try:
-        # Carga del Excel omitiendo encabezados iniciales de reporte si existen
-        df_raw = pd.read_excel(file_path, sheet_name=sheet_name)
+    for nombre_hoja in xls.sheet_names:
+        df_raw = pd.read_excel(archivo_path, sheet_name=nombre_hoja)
         
-        # Localizar la fila que contiene los nombres de las columnas reales
-        header_row_idx = None
+        # Buscar la fila que contiene los nombres de las columnas principales
+        header_idx = None
         for idx, row in df_raw.iterrows():
-            if "PROVEEDORCLIENTE" in row.values or "Fecha y Hora contable" in row.values:
-                header_row_idx = idx
+            valores_fila = [str(val).upper().strip() for val in row.values if pd.notna(val)]
+            if any("PROVEEDOR" in v or "CARGO" in v or "ABONO" in v for v in valores_fila):
+                header_idx = idx
                 break
         
-        if header_row_idx is not None:
-            df = pd.read_excel(file_path, sheet_name=sheet_name, skiprows=header_row_idx + 1)
-        else:
-            df = df_raw.copy()
+        if header_idx is not None:
+            # Reasignar encabezados y limpiar filas superiores
+            df_hoja = pd.read_excel(archivo_path, sheet_name=nombre_hoja, skiprows=header_idx + 1)
+            # Normalizar nombres de columnas
+            df_hoja.columns = [str(col).strip().upper().replace(" ", "_") for col in df_raw.iloc[header_idx]]
+            df_hoja['HOJA_ORIGEN'] = nombre_hoja
+            hojas_procesadas.append(df_hoja)
 
-        # Normalizar nombres de columnas
-        df.columns = df.columns.str.strip().str.upper()
-        
-        # Limpieza de montos numéricos
-        columnas_numericas = ['SUBTOTAL', 'CARGO', 'ABONO', 'SALDO']
-        for col in columnas_numericas:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+    if not hojas_procesadas:
+        raise ValueError("No se encontraron tablas con formato válido en el archivo.")
 
-        # Formato de fecha
-        if 'FECHA Y HORA CONTABLE' in df.columns:
-            df['FECHA Y HORA CONTABLE'] = pd.to_datetime(df['FECHA Y HORA CONTABLE'], errors='coerce')
+    # Concatenar todas las pestañas procesadas
+    df_consolidado = pd.concat(hojas_procesadas, ignore_index=True)
 
-        return df
+    # Renombrar columnas comunes para estandarizar
+    mapeo_columnas = {
+        'FECHA_Y_HORA_CONTABLE': 'FECHA',
+        'PROVEEDORCLIENTE': 'PROVEEDOR_CLIENTE',
+        'PROVEEDOR_/_CLIENTE': 'PROVEEDOR_CLIENTE',
+        'APLICADO_EN': 'APLICADO_EN'
+    }
+    df_consolidado.rename(columns=mapeo_columnas, inplace=True)
 
-    except Exception as e:
-        print(f"Nota: No se pudo cargar el archivo local directamente ({e}). Utilizando dataset estructurado de respaldo...")
-        return crear_dataset_ejemplo()
+    # Filtrar filas vacías o de totales que no contienen movimientos
+    cols_clave = [col for col in ['CARGO', 'ABONO', 'SALDO'] if col in df_consolidado.columns]
+    df_consolidado.dropna(subset=cols_clave, how='all', inplace=True)
 
-# ==============================================================================
-# 2. DATASET DE RESPALDO (ESTRUCTURA COMPLETA COMPATIBLE)
-# ==============================================================================
+    # Convertir y limpiar columnas numéricas
+    for col in ['SUBTOTAL', 'CARGO', 'ABONO', 'SALDO']:
+        if col in df_consolidado.columns:
+            df_consolidado[col] = pd.to_numeric(
+                df_consolidado[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False),
+                errors='coerce'
+            ).fillna(0.0)
 
-def crear_dataset_ejemplo():
-    data = [
-        {
-            "FECHA Y HORA CONTABLE": "2026-09-30 14:48:39",
-            "DESCRIPCIÓN": "ABONO TRANSFERENCIA SPEI",
-            "PROVEEDORCLIENTE": "BBVA",
-            "SUBTOTAL": 150000.0,
-            "CARGO": 0.0,
-            "ABONO": 150000.0,
-            "SALDO": 181260.09,
-            "AREA": "RANCHO",
-            "APLICADO EN": "FINANCIERO",
-            "SUBCUENTA": "LA PERLA",
-            "CONCEPTO": "TRANSFERENCIA ENTRE CUENTAS 012680001265451814"
-        },
-        {
-            "FECHA Y HORA CONTABLE": "2026-09-28 14:37:46",
-            "DESCRIPCIÓN": "ABONO TRANSFERENCIA SPEI",
-            "PROVEEDORCLIENTE": "BBVA",
-            "SUBTOTAL": 100000.0,
-            "CARGO": 0.0,
-            "ABONO": 100000.0,
-            "SALDO": 126905.09,
-            "AREA": "RANCHO",
-            "APLICADO EN": "FINANCIERO",
-            "SUBCUENTA": "LA PERLA",
-            "CONCEPTO": "TRANSFERENCIA ENTRE CUENTAS 012680001265451814"
-        },
-        {
-            "FECHA Y HORA CONTABLE": "2026-01-06 10:00:00",
-            "DESCRIPCIÓN": "CARGO FLETE DE HORTALIZAS",
-            "PROVEEDORCLIENTE": "JUANA SILVIA HERNANDEZ GONZALEZ",
-            "SUBTOTAL": 5459.03,
-            "CARGO": 6332.48,
-            "ABONO": 0.0,
-            "SALDO": 0.0,
-            "AREA": "LA PERLA",
-            "APLICADO EN": "BROCOLI",
-            "SUBCUENTA": "FLETE",
-            "CONCEPTO": "FLETE DE BROCOLI DE CAMPO A PLANTA"
-        },
-        {
-            "FECHA Y HORA CONTABLE": "2026-01-07 11:30:00",
-            "DESCRIPCIÓN": "COMPRA DIESEL MAQUINARIA",
-            "PROVEEDORCLIENTE": "GASOLINERA LA PERLA SA DE CV",
-            "SUBTOTAL": 7211.64,
-            "CARGO": 8365.50,
-            "ABONO": 0.0,
-            "SALDO": 1628962.20,
-            "AREA": "LA PERLA",
-            "APLICADO EN": "EQUIPO",
-            "SUBCUENTA": "DIESEL",
-            "CONCEPTO": "SUMINISTRO DIESEL TRACTORES"
-        }
-    ]
-    df = pd.DataFrame(data)
-    df['FECHA Y HORA CONTABLE'] = pd.to_datetime(df['FECHA Y HORA CONTABLE'])
-    return df
+    # Convertir columna de Fecha
+    if 'FECHA' in df_consolidado.columns:
+        df_consolidado['FECHA'] = pd.to_datetime(df_consolidado['FECHA'], errors='coerce')
 
-# ==============================================================================
-# 3. FUNCIONES DE ANÁLISIS Y REPORTING FINANCIERO
-# ==============================================================================
+    return df_consolidado
 
-def generar_resumen_por_area(df):
-    """Calcula total de cargos, abonos y flujo neto por Área."""
-    resumen = df.groupby('AREA')[['CARGO', 'ABONO']].sum().reset_index()
-    resumen['FLUJO_NETO'] = resumen['ABONO'] - resumen['CARGO']
-    return resumen
 
-def generar_resumen_por_aplicacion(df):
-    """Calcula desgloses agrupados por Aplicado En y Subcuenta."""
-    resumen = df.groupby(['APLICADO EN', 'SUBCUENTA'])[['CARGO', 'ABONO']].sum().reset_index()
-    resumen['NETO'] = resumen['ABONO'] - resumen['CARGO']
-    return resumen
+def generar_reporte_financiero(df):
+    """
+    Genera resúmenes ejecutivos a partir del dataframe consolidado.
+    """
+    reportes = {}
 
-# ==============================================================================
-# 4. EJECUCIÓN DEL SCRIPT
-# ==============================================================================
+    # 1. Resumen por Área (RANCHO, LA PERLA, CASAS, etc.)
+    if 'AREA' in df.columns:
+        reportes['resumen_area'] = df.groupby('AREA').agg(
+            Total_Cargos=('CARGO', 'sum'),
+            Total_Abonos=('ABONO', 'sum'),
+            Total_Movimientos=('CARGO', 'count')
+        ).reset_index()
+        reportes['resumen_area']['Flujo_Neto'] = reportes['resumen_area']['Total_Abonos'] - reportes['resumen_area']['Total_Cargos']
 
+    # 2. Resumen por Subcuenta y Aplicado En
+    cols_agrupacion = [c for c in ['AREA', 'APLICADO_EN', 'SUBCUENTA'] if c in df.columns]
+    if cols_agrupacion:
+        reportes['desglose_subcuenta'] = df.groupby(cols_agrupacion).agg(
+            Total_Cargos=('CARGO', 'sum'),
+            Total_Abonos=('ABONO', 'sum')
+        ).reset_index()
+
+    # 3. Top Proveedores / Clientes por volumen de egresos
+    if 'PROVEEDOR_CLIENTE' in df.columns:
+        reportes['top_proveedores'] = df.groupby('PROVEEDOR_CLIENTE').agg(
+            Total_Pagado=('CARGO', 'sum'),
+            Total_Cobrado=('ABONO', 'sum')
+        ).sort_values(by='Total_Pagado', ascending=False).head(10).reset_index()
+
+    return reportes
+
+
+# ==========================================
+# EJECUCIÓN PRINCIPAL
+# ==========================================
 if __name__ == "__main__":
-    # Cargar datos
-    df_movimientos = cargar_y_limpiar_movimientos()
+    ruta_archivo = 'MOVIMIENTOS 2026.xlsx'  # Reemplazar por la ruta de tu archivo
+    
+    print("Cargando y procesando datos...")
+    df_movimientos = cargar_y_limpiar_movimientos(ruta_archivo)
+    
+    print(f"\n¡Procesamiento exitoso! Total de movimientos válidos: {len(df_movimientos)}")
+    print("\n--- VISTA PREVIA DE LOS DATOS ---")
+    print(df_movimientos[['FECHA', 'PROVEEDOR_CLIENTE', 'CARGO', 'ABONO', 'AREA', 'SUBCUENTA']].head())
 
-    print("=== VISTA PREVIA DE LOS DATOS PROCESADOS ===")
-    print(df_movimientos[['FECHA Y HORA CONTABLE', 'PROVEEDORCLIENTE', 'CARGO', 'ABONO', 'AREA', 'SUBCUENTA']].head())
+    # Generar reportes
+    reportes = generar_reporte_financiero(df_movimientos)
 
-    print("\n=== RESUMEN POR ÁREA ===")
-    resumen_area = generar_resumen_por_area(df_movimientos)
-    print(resumen_area.to_string(index=False))
+    if 'resumen_area' in reportes:
+        print("\n--- RESUMEN POR ÁREA ---")
+        print(reportes['resumen_area'].to_string(index=False))
 
-    print("\n=== RESUMEN POR APLICADO EN / SUBCUENTA ===")
-    resumen_app = generar_resumen_por_aplicacion(df_movimientos)
-    print(resumen_app.to_string(index=False))
+    # Guardar resultado consolidado a Excel
+    archivo_salida = 'MOVIMIENTOS_CONSOLIDADOS_2026.xlsx'
+    with pd.ExcelWriter(archivo_salida, engine='openpyxl') as writer:
+        df_movimientos.to_excel(writer, sheet_name='Movimientos_Limpios', index=False)
+        for nombre_reporte, df_rep in reportes.items():
+            df_rep.to_excel(writer, sheet_name=nombre_reporte[:31], index=False)
+            
+    print(f"\nReporte completo exportado correctamente a: {archivo_salida}")
